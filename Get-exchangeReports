@@ -1,0 +1,152 @@
+<# Function Get-ExchangeReports{
+    [CmdletBinding()]
+    param(
+        [parameter(Mandatory=$true,
+                   ValueFromPipeline = $true,
+                   HelpMessage = "Exchange Server name" )]
+        [Alias('Hostname')]
+        
+        [string]$Computer
+    )
+    #>
+
+
+$result =@()
+$computer = '$exserver'
+
+$exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://$computer/PowerShell -Authentication Kerberos 
+Import-PSSession $ExchangeSession -DisableNameChecking -ErrorAction SilentlyContinue
+
+
+if (Test-Path mailboxes.csv){
+    Write-Warning "deleting old mailboxes.csv"
+    Remove-Item mailboxes.csv
+}
+
+
+
+$mailboxs = get-mailbox 
+
+    $Counter = 0
+    
+foreach ($mailbox in $mailboxs) {
+    
+    Write-Progress -Activity "Processing Mailboxes" -CurrentOperation $($mailbox.name) -PercentComplete (($counter / $mailboxs.count) * 100) -Status Processing
+    $Counter++
+    
+    if ($mailbox.DisplayName -eq 'Discovery Search Mailbox') {Continue}
+
+    $mailboxStat = $mailbox | Get-MailboxStatistics 
+    
+    if ($mailboxStat -eq $null) {
+        $mailboxstat = @{'LastLogonTime' = 'Never';
+                         'TotalItemSize' = "0 (0)";
+                         }
+    }
+        
+    $smtp = $mailbox |select name -ExpandProperty EmailAddresses
+    
+    $smtpaddress= $null
+    $smtpaddresses = $null
+    foreach ($smtpaddress in $smtp){
+        
+        if ($smtpaddress -like '*local*' -or $smtpaddress -like "smtp:$($mailbox.PrimarySmtpAddress)" -or $smtpaddress -like '*x400*' )  {continue}
+
+        else{
+            $smtpaddresses += $smtpaddress
+        }
+    }
+    $smtpaddresses = $smtpaddresses -replace 'smtp:',' '
+    $smtpaddresses = $smtpaddresses -join ', '
+    
+
+    $TotalItemSize = ((($mailboxStat.TotalItemSize).tostring()).Split('(')[1]).Replace(' bytes','').Replace(')','').replace(',','')
+    $TotalItemSizeInt = [convert]::ToInt64($TotalItemSize)
+    $TotalItemSizeInt = [math]::round($TotalItemSizeInt  / 1GB, 2)
+    
+    if ($PSVersionTable.psversion.major -le 2){
+    
+        $props =  @{'שם תצוגה'=$mailbox.DisplayName;
+                    'תאריך יצירת התיבה'=$mailbox.WhenMailboxCreated;
+                    'תאריך התחברות אחרון'=$mailboxStat.LastLogonTime;
+                    'גודל התיבה (GB)'=$TotalItemSizeInt;
+                    'גודל מקסימלי'=($mailbox.ProhibitSendQuota).Split('(')[0];
+                    'כתובת מייל ראשית'=$mailbox.PrimarySmtpAddress;
+                    'כתובות מייל נוספות'=$smtpaddresses;
+        }
+    }
+    else{
+        $props =  [ordered]@{'שם תצוגה'=$mailbox.DisplayName;
+                    'תאריך יצירת התיבה'=$mailbox.WhenMailboxCreated;
+                    'תאריך התחברות אחרון'=$mailboxStat.LastLogonTime;
+                    'גודל התיבה (GB)'=$TotalItemSizeInt;
+                    'גודל מקסימלי'=($mailbox.ProhibitSendQuota).Split('(')[0];
+                    'כתובת מייל ראשית'=$mailbox.PrimarySmtpAddress;
+                    'כתובות מייל נוספות'=$smtpaddresses;
+        }
+    }   
+
+                            
+    $obj = New-Object -TypeName psobject -Property $props 
+    
+    $result += $obj
+        
+}
+
+$result| Export-Csv mailboxes.csv -Encoding UTF8 -NoTypeInformation
+
+#-------- Distribution Groups -----
+
+Clear-Variable obj
+
+if (Test-Path Distribution.csv){
+    Write-Warning "deleting old Distribution.csv"
+    Remove-Item Distribution.csv
+}
+
+$DistributionGroupsResults =@()
+
+$DistributionGroups = Get-DistributionGroup 
+    foreach ($DistributionGroup in $DistributionGroups){
+        $DistributionGroupMembers =$null
+        $GroupMembers = Get-DistributionGroupMember $DistributionGroup.name 
+        foreach ($member in $GroupMembers){
+            if ($member.RecipientType -like 'UserMailbox'){
+                [array]$DistributionGroupMembers  += $member.name
+            }
+        }
+        
+        if ($PSVersionTable.psversion.major -le 2){
+        
+            $distprops  = @{'שם רשימת תפוצה'=$DistributionGroup.name;
+                            'כתובת מייל ראשית'=$DistributionGroup.PrimarySmtpAddress;
+                            'תאריך יצירה'=$DistributionGroup.WhenCreated;
+                            'האם פתוחה לשולחים חיצוניים'=($DistributionGroup.RequireSenderAuthenticationEnabled );
+                            'חברים בקבוצה'=$DistributionGroupMembers -join ',';
+            }
+         }
+         else{
+             $distprops  = [ordered]@{'שם רשימת תפוצה'=$DistributionGroup.name;
+                                      'כתובת מייל ראשית'=$DistributionGroup.PrimarySmtpAddress;
+                                      'תאריך יצירה'=$DistributionGroup.WhenCreated;
+                                      'האם פתוחה לשולחים חיצוניים'=($DistributionGroup.RequireSenderAuthenticationEnabled );
+                                      'חברים בקבוצה'=$DistributionGroupMembers -join ',';
+             }
+         }
+        
+        
+        
+        $obj = New-Object -TypeName psobject -Property $distprops 
+        $DistributionGroupsResults += $obj
+        $DistributionGroupsResults |Export-Csv Distribution.csv -Encoding utf8 -NoTypeInformation
+        
+        
+            
+        
+    }
+
+
+
+remove-PSSession $ExchangeSession
+
+
